@@ -6,7 +6,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-BASE_URL = "http://localhost:3000"
+BASE_URL = "http://localhost:3001"
 TEST_EMAIL = "testuser@example.com"
 TEST_PASSWORD = "Test@1234"
 TEST_NAME = "Test User"
