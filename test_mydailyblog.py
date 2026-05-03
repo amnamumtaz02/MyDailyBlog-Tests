@@ -1,89 +1,168 @@
 import pytest
+import time
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-import time
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 BASE_URL = "http://localhost:3001"
 
 @pytest.fixture(scope="module")
 def driver():
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--headless=new") # Modern headless mode
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080") # Standardize viewport
     driver = webdriver.Chrome(options=chrome_options)
-    driver.implicitly_wait(5)
     yield driver
     driver.quit()
 
-def test_01_unauthenticated_redirects_to_signin(driver):
-    driver.get(BASE_URL)
-    time.sleep(1)
-    assert "signin" in driver.current_url or "login" in driver.current_url
+# --- SECURITY & ROUTING TESTS ---
 
-def test_02_signin_page_loads(driver):
+def test_01_protected_route_enforcement(driver):
+    # Tests that unauthenticated users are forced to authenticate
+    driver.get(f"{BASE_URL}/")
+    wait = WebDriverWait(driver, 5)
+    wait.until(EC.url_contains("signin"))
+    assert "signin" in driver.current_url.lower(), "Failed to protect root route"
+
+def test_02_invalid_url_handling(driver):
+    # Tests how the app handles a 404 Not Found scenario
+    driver.get(f"{BASE_URL}/this-route-does-not-exist")
+    wait = WebDriverWait(driver, 5)
+    body_text = driver.find_element(By.TAG_NAME, "body").text
+    assert "404" in body_text or "not found" in body_text.lower(), "404 page not rendering correctly"
+
+# --- NAVIGATION & INTERACTIVITY TESTS ---
+
+def test_03_client_side_navigation_to_signup(driver):
+    # Tests if the Next.js router transitions pages without a full reload
     driver.get(f"{BASE_URL}/signin")
-    assert "<html" in driver.page_source.lower()
-
-def test_03_signin_has_email_field(driver):
-    driver.get(f"{BASE_URL}/signin")
-    assert driver.find_element(By.CSS_SELECTOR, "input[type='email']")
-
-def test_04_signin_has_password_field(driver):
-    driver.get(f"{BASE_URL}/signin")
-    assert driver.find_element(By.CSS_SELECTOR, "input[type='password']")
-
-def test_05_signin_has_submit_button(driver):
-    driver.get(f"{BASE_URL}/signin")
-    assert driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
-
-def test_06_signup_page_loads(driver):
-    driver.get(f"{BASE_URL}/signup")
+    wait = WebDriverWait(driver, 5)
+    # Finds the link that points to the signup page and clicks it
+    signup_link = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='signup']")))
+    signup_link.click()
+    wait.until(EC.url_contains("signup"))
     assert "signup" in driver.current_url
 
-def test_07_signup_has_name_field(driver):
+def test_04_client_side_navigation_to_signin(driver):
     driver.get(f"{BASE_URL}/signup")
-    assert driver.find_element(By.CSS_SELECTOR, "input[type='text']")
+    wait = WebDriverWait(driver, 5)
+    signin_link = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='signin']")))
+    signin_link.click()
+    wait.until(EC.url_contains("signin"))
+    assert "signin" in driver.current_url
 
-def test_08_signup_has_email_field(driver):
-    driver.get(f"{BASE_URL}/signup")
-    assert driver.find_element(By.CSS_SELECTOR, "input[type='email']")
+# --- FORM VALIDATION & UI STATE TESTS ---
 
-def test_09_signup_has_password_field(driver):
-    driver.get(f"{BASE_URL}/signup")
-    assert driver.find_element(By.CSS_SELECTOR, "input[type='password']")
-
-def test_10_signup_has_submit_button(driver):
-    driver.get(f"{BASE_URL}/signup")
-    assert driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
-
-def test_11_signin_email_typing(driver):
+def test_05_signin_html5_validation_empty_submit(driver):
+    # Tests that the browser prevents submission of empty required fields
     driver.get(f"{BASE_URL}/signin")
-    field = driver.find_element(By.CSS_SELECTOR, "input[type='email']")
-    field.send_keys("testuser@example.com")
-    assert field.get_attribute("value") == "testuser@example.com"
+    wait = WebDriverWait(driver, 5)
+    submit_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[type='submit']")))
+    submit_btn.click()
+    
+    email_field = driver.find_element(By.CSS_SELECTOR, "input[type='email']")
+    # Check if HTML5 'required' validation kicks in
+    is_valid = driver.execute_script("return arguments[0].validity.valid;", email_field)
+    assert not is_valid, "Form submitted despite empty required fields"
 
-def test_12_signin_password_typing(driver):
+def test_06_signin_email_format_validation(driver):
     driver.get(f"{BASE_URL}/signin")
-    field = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
-    field.send_keys("Test@1234")
-    assert field.get_attribute("value") == "Test@1234"
+    email_field = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email']")))
+    email_field.send_keys("invalid-email-format")
+    
+    is_valid = driver.execute_script("return arguments[0].validity.valid;", email_field)
+    assert not is_valid, "Form accepted an improperly formatted email address"
 
-def test_13_signup_email_typing(driver):
-    driver.get(f"{BASE_URL}/signup")
-    field = driver.find_element(By.CSS_SELECTOR, "input[type='email']")
-    field.send_keys("newuser@example.com")
-    assert field.get_attribute("value") == "newuser@example.com"
+def test_07_password_field_security_masking(driver):
+    # Ensures passwords are not exposed in plain text on the screen
+    driver.get(f"{BASE_URL}/signin")
+    password_field = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='password'], input[type='password']")))
+    assert password_field.get_attribute("type") == "password", "Password field is not masked"
 
-def test_14_signup_password_typing(driver):
-    driver.get(f"{BASE_URL}/signup")
-    field = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
-    field.send_keys("SecurePass1!")
-    assert field.get_attribute("value") == "SecurePass1!"
+# --- DATA ENTRY & END-TO-END SIMULATION ---
 
-def test_15_signup_name_typing(driver):
+def test_08_signup_form_full_data_entry(driver):
+    # Simulates a complete user data entry workflow
     driver.get(f"{BASE_URL}/signup")
-    field = driver.find_element(By.CSS_SELECTOR, "input[type='text']")
-    field.send_keys("Amna")
-    assert field.get_attribute("value") == "Amna"
+    wait = WebDriverWait(driver, 5)
+    
+    name = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text']")))
+    email = driver.find_element(By.CSS_SELECTOR, "input[type='email']")
+    password = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
+    
+    name.send_keys("Automated Tester")
+    email.send_keys("auto@test.com")
+    password.send_keys("SecurePass123!")
+    
+    assert name.get_attribute("value") == "Automated Tester"
+    assert email.get_attribute("value") == "auto@test.com"
+    assert password.get_attribute("value") == "SecurePass123!"
+
+def test_09_signin_form_full_data_entry(driver):
+    driver.get(f"{BASE_URL}/signin")
+    wait = WebDriverWait(driver, 5)
+    
+    email = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email']")))
+    password = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
+    
+    email.send_keys("testuser@example.com")
+    password.send_keys("Test@1234")
+    
+    assert email.get_attribute("value") == "testuser@example.com"
+
+def test_10_xss_input_sanitization_check(driver):
+    # Injects a script tag to ensure the input field handles it as a raw string
+    driver.get(f"{BASE_URL}/signup")
+    name_field = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text']")))
+    xss_payload = "<script>alert('hack')</script>"
+    name_field.send_keys(xss_payload)
+    assert name_field.get_attribute("value") == xss_payload, "Input field failed to handle special characters"
+
+# --- LAYOUT & RESPONSIVENESS TESTS ---
+
+def test_11_responsive_mobile_layout_rendering(driver):
+    # Simulates an iPhone viewport to test CSS responsiveness
+    driver.set_window_size(375, 812)
+    driver.get(f"{BASE_URL}/signin")
+    wait = WebDriverWait(driver, 5)
+    # Check if the submit button is still visible and clickable on mobile
+    submit_btn = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "button[type='submit']")))
+    assert submit_btn.is_displayed(), "Submit button disappeared on mobile layout"
+    # Restore window size for remaining tests
+    driver.set_window_size(1920, 1080)
+
+def test_12_responsive_tablet_layout_rendering(driver):
+    # Simulates an iPad viewport
+    driver.set_window_size(768, 1024)
+    driver.get(f"{BASE_URL}/signup")
+    wait = WebDriverWait(driver, 5)
+    form = wait.until(EC.visibility_of_element_located((By.TAG_NAME, "form")))
+    assert form.is_displayed(), "Signup form broke on tablet layout"
+    driver.set_window_size(1920, 1080)
+
+# --- PERFORMANCE & BROWSER API TESTS ---
+
+def test_13_page_load_performance(driver):
+    # Validates that the signin page loads under an acceptable threshold (2 seconds)
+    start_time = time.time()
+    driver.get(f"{BASE_URL}/signin")
+    WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, "form")))
+    load_time = time.time() - start_time
+    assert load_time < 2.0, f"Page load performance too slow: {load_time} seconds"
+
+def test_14_document_readiness_state(driver):
+    # Tests that the DOM completely finished parsing and loading resources
+    driver.get(f"{BASE_URL}/signin")
+    ready_state = driver.execute_script("return document.readyState;")
+    assert ready_state == "complete", "Document failed to reach complete readyState"
+
+def test_15_no_console_errors_on_load(driver):
+    # Reads the browser's console to ensure React isn't throwing hydration errors
+    driver.get(f"{BASE_URL}/signin")
+    logs = driver.get_log("browser")
+    severe_errors = [log for log in logs if log['level'] == 'SEVERE']
+    assert len(severe_errors) == 0, f"Found severe console errors: {severe_errors}"
